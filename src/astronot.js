@@ -7,6 +7,7 @@ import { parseArgs } from 'node:util';
 import { sanitizeUrl, sanitizeImageString } from './helpers/sanitize.mjs';
 import { hashString, downloadImage } from './helpers/images.mjs';
 import { delay } from './helpers/delay.mjs';
+import path from "path";
 
 // Input Arguments
 const ARGUMENT_OPTIONS = {
@@ -47,13 +48,11 @@ n2m.setCustomTransformer("embed", async (block) => {
 });
 
 n2m.setCustomTransformer("image", async (block) => {
-  const { image, id } = block;
+  const { image } = block;
+  console.info("Image Block:", image);
   const imageUrl = image?.file?.url || image?.external?.url;
-  const imageFileName = sanitizeImageString(imageUrl.split('/').pop());
-  const filePath = await downloadImage(imageUrl, `./images/${imageFileName}`);
-  const fileName = filePath.split('/').pop();
-
-  return `<Image src="/images/posts/${fileName}" />`;
+  const alt = image?.caption?.[0]?.plain_text || 'CDV Group Valve Image is loading';
+  return `![${alt}](${imageUrl})`;
 });
 
 n2m.setCustomTransformer("video", async (block) => {
@@ -94,12 +93,18 @@ if (isPublished) {
 
 const databaseResponse = await notion.databases.query(queryParams);
 const { results } = databaseResponse;
-
+const defaultDocLocale = 'en';
 // Create Pages
 const pages = results.map((page) => {
   const { properties, cover, created_time, last_edited_time, icon, archived } = page;
-  const title = properties.title.title[0].plain_text
+  const title = properties.title.title[0].plain_text || "Untitled";
   const slug = properties?.slug?.rich_text[0]?.plain_text || sanitizeUrl(title)
+
+  let locale = properties.locale?.select?.name || '';
+  // get the locale from the page properties, if the collection  is `docs` then compare the locale with the defaultDolocale, if locale is same as defaultDocLocale then set the locale to `''`
+  if (properties.collection?.select?.name === 'docs' && properties.locale?.select?.name === defaultDocLocale) {
+     locale = '';
+  } 
 
   console.info("Notion Page:", page);
 
@@ -108,11 +113,15 @@ const pages = results.map((page) => {
     title,
     type: page.object,
     cover: cover?.external?.url || cover?.file?.url,
-    tags: properties.tags.multi_select,
+    // tags: properties.tags.multi_select,// tags like this `[{"id":"ee932bde-0023-446f-9bb4-17d2022121c9","name":"文字","color":"brown"},{"id":"d9f66761-0396-4e80-be5c-2ab6c7f8ba86","name":"推荐","color":"red"}]`, need to be parsed into array with names
+    tags: properties.tags.multi_select.map(tag => tag.name),
+    collection: properties.collection?.select?.name || 'etc',
     created_time,
     last_edited_time,
     icon,
+    locale: locale,
     archived,
+    category: properties.category?.select?.name || 'unknown',
     status: properties?.status?.select?.name,
     publish_date: properties?.publish_date?.date?.start,
     description: properties?.description?.rich_text[0]?.plain_text,
@@ -133,27 +142,36 @@ for (let page of pages) {
 
   // Generate page contents (frontmatter, MDX imports, + converted Notion markdown)
   const pageContents = `---
-layout: "../../layouts/PostLayout.astro"
 id: "${page.id}"
+type: "${page.type}"
 slug: "${page.slug}"
 title: "${page.title}"
-cover: "${coverFileName}"
+cover: "${page.cover}"
+coverAlt: "${page.title}"
+coverFileName: "${coverFileName}"
 tags: ${JSON.stringify(page.tags)}
 created_time: ${page.created_time}
 last_edited_time: ${page.last_edited_time}
 icon: ${JSON.stringify(page.icon)}
 archived: ${page.archived}
+category: ${page.category}
+locale: "${page.locale}"
 status: "${page.status}"
 publish_date: ${page.publish_date ? page.publish_date : false}
 description: "${page.description === 'undefined' ? '' : page.description}"
 reading_time: "${estimatedReadingTime}"
 ---
-import Image from '../../components/Image.astro';
 
 ${mdString}
 `
 
-  if (mdString) fs.writeFileSync(`${process.cwd()}/${POSTS_PATH}/${page.slug}.mdx`, pageContents);
+
+// create the path if it doesn't exist
+if (!fs.existsSync(`${process.cwd()}/src/content/${page.collection}/${page.locale}`)) {
+  fs.mkdirSync(`${process.cwd()}/src/content/${page.collection}/${page.locale}`, { recursive: true });
+}
+
+  if (mdString) fs.writeFileSync(`${process.cwd()}/src/content/${page.collection}/${page.locale}/${page.slug}.md`, pageContents);
   else console.log(`No content for page ${page.id}`)
 
   console.debug(`Sleeping for ${THROTTLE_DURATION} ms...\n`)
